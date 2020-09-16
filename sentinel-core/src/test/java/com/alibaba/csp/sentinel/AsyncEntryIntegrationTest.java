@@ -15,22 +15,24 @@
  */
 package com.alibaba.csp.sentinel;
 
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
+import com.alibaba.csp.sentinel.context.ContextTestUtil;
 import com.alibaba.csp.sentinel.context.ContextUtil;
 import com.alibaba.csp.sentinel.node.DefaultNode;
-import com.alibaba.csp.sentinel.node.EntranceNode;
 import com.alibaba.csp.sentinel.node.Node;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
-
+import org.hamcrest.CoreMatchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import static org.junit.Assert.*;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.awaitility.Awaitility.await;
+import static org.junit.Assert.fail;
 
 /**
  * Integration test for asynchronous entry, including common scenarios.
@@ -41,10 +43,7 @@ public class AsyncEntryIntegrationTest {
 
     @Before
     public void clearContext() {
-        if (ContextUtil.getContext() != null) {
-            ContextUtil.getContext().setCurEntry(null);
-            ContextUtil.exit();
-        }
+        ContextTestUtil.cleanUpContext();
     }
 
     private final ExecutorService pool = Executors.newFixedThreadPool(10);
@@ -60,7 +59,7 @@ public class AsyncEntryIntegrationTest {
                         @Override
                         public void run() {
                             try {
-                                TimeUnit.SECONDS.sleep(2);
+                                TimeUnit.MILLISECONDS.sleep(500);
                                 anotherSyncInAsync();
                                 System.out.println("Async result: 666");
                             } catch (InterruptedException e) {
@@ -178,20 +177,66 @@ public class AsyncEntryIntegrationTest {
             ContextUtil.exit();
         }
 
-        TimeUnit.SECONDS.sleep(10);
-        testTreeCorrect();
+        // we keep the original timeout of 15 seconds although the test should
+        // complete in less than 3 seconds
+        await().timeout(15, TimeUnit.SECONDS)
+            .until(new Callable<DefaultNode>() {
+                @Override
+                public DefaultNode call() throws Exception {
+                    return queryInvocationTree(false);
+                }
+            }, CoreMatchers.notNullValue());
+
+        queryInvocationTree(true);
     }
 
-    private void testTreeCorrect() {
+    private DefaultNode queryInvocationTree(boolean check) {
         DefaultNode root = Constants.ROOT;
-        Set<Node> childListForRoot = root.getChildList();
-        // TODO: check child tree
+        DefaultNode entranceNode = shouldHasChildFor(root, contextName, check);
+        DefaultNode testTopNode = shouldHasChildFor(entranceNode, "test-top", check);
+        DefaultNode testAsyncNode = shouldHasChildFor(testTopNode, "test-async", check);
+        shouldHasChildFor(testTopNode, "test-sync", check);
+        shouldHasChildFor(testAsyncNode, "test-sync-in-async", check);
+        DefaultNode anotherAsyncInAsyncNode = shouldHasChildFor(testAsyncNode, "test-another-async", check);
+        return shouldHasChildFor(anotherAsyncInAsyncNode, "test-another-in-async", check);
+    }
+
+    private DefaultNode shouldHasChildFor(DefaultNode root, String resourceName, boolean check) {
+        if (root == null) {
+            if (check) {
+                fail("Root node should not be empty");
+            } else {
+                return null;
+            }
+        }
+        Set<Node> nodeSet = root.getChildList();
+        if (nodeSet == null || nodeSet.isEmpty()) {
+            if (check) {
+                fail("Child nodes should not be empty: " + root.getId().getName());
+            } else {
+                return null;
+            }
+        }
+        for (Node node : nodeSet) {
+            if (node instanceof DefaultNode) {
+                DefaultNode dn = (DefaultNode) node;
+                if (dn.getId().getName().equals(resourceName)) {
+                    return dn;
+                }
+            }
+        }
+
+        if (check) {
+            fail(String.format("The given node <%s> does not have child for resource <%s>",
+                root.getId().getName(), resourceName));
+        }
+        return null;
     }
 
     @After
     public void shutdown() {
         pool.shutdownNow();
-        ContextUtil.exit();
+        ContextTestUtil.cleanUpContext();
     }
 
     private void runAsync(Runnable f) {
@@ -204,7 +249,7 @@ public class AsyncEntryIntegrationTest {
             @Override
             public void run() {
                 try {
-                    TimeUnit.SECONDS.sleep(3);
+                    TimeUnit.MILLISECONDS.sleep(1000);
                     String resp = arg + ": " + System.currentTimeMillis();
                     handler.accept(resp);
 

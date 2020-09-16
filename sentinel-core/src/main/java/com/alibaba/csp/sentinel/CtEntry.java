@@ -15,11 +15,16 @@
  */
 package com.alibaba.csp.sentinel;
 
+import java.util.LinkedList;
+
 import com.alibaba.csp.sentinel.context.Context;
 import com.alibaba.csp.sentinel.context.ContextUtil;
+import com.alibaba.csp.sentinel.context.NullContext;
+import com.alibaba.csp.sentinel.log.RecordLog;
 import com.alibaba.csp.sentinel.node.Node;
 import com.alibaba.csp.sentinel.slotchain.ProcessorSlot;
 import com.alibaba.csp.sentinel.slotchain.ResourceWrapper;
+import com.alibaba.csp.sentinel.util.function.BiConsumer;
 
 /**
  * Linked entry within current context.
@@ -34,6 +39,7 @@ class CtEntry extends Entry {
 
     protected ProcessorSlot<Object> chain;
     protected Context context;
+    protected LinkedList<BiConsumer<Context, Entry>> exitHandlers;
 
     CtEntry(ResourceWrapper resourceWrapper, ProcessorSlot<Object> chain, Context context) {
         super(resourceWrapper);
@@ -44,9 +50,13 @@ class CtEntry extends Entry {
     }
 
     private void setUpEntryFor(Context context) {
+        // The entry should not be associated to NullContext.
+        if (context instanceof NullContext) {
+            return;
+        }
         this.parent = context.getCurEntry();
         if (parent != null) {
-            ((CtEntry)parent).child = this;
+            ((CtEntry) parent).child = this;
         }
         context.setCurEntry(this);
     }
@@ -56,28 +66,61 @@ class CtEntry extends Entry {
         trueExit(count, args);
     }
 
+    /**
+     * Note: the exit handlers will be called AFTER onExit of slot chain.
+     */
+    private void callExitHandlersAndCleanUp(Context ctx) {
+        if (exitHandlers != null && !exitHandlers.isEmpty()) {
+            for (BiConsumer<Context, Entry> handler : this.exitHandlers) {
+                try {
+                    handler.accept(ctx, this);
+                } catch (Exception e) {
+                    RecordLog.warn("Error occurred when invoking entry exit handler, current entry: "
+                        + resourceWrapper.getName(), e);
+                }
+            }
+            exitHandlers = null;
+        }
+    }
+
     protected void exitForContext(Context context, int count, Object... args) throws ErrorEntryFreeException {
         if (context != null) {
+            // Null context should exit without clean-up.
+            if (context instanceof NullContext) {
+                return;
+            }
+
             if (context.getCurEntry() != this) {
+                String curEntryNameInContext = context.getCurEntry() == null ? null
+                    : context.getCurEntry().getResourceWrapper().getName();
                 // Clean previous call stack.
-                CtEntry e = (CtEntry)context.getCurEntry();
+                CtEntry e = (CtEntry) context.getCurEntry();
                 while (e != null) {
                     e.exit(count, args);
-                    e = (CtEntry)e.parent;
+                    e = (CtEntry) e.parent;
                 }
-                throw new ErrorEntryFreeException("The order of entry free is can't be paired with the order of entry");
+                String errorMessage = String.format("The order of entry exit can't be paired with the order of entry"
+                        + ", current entry in context: <%s>, but expected: <%s>", curEntryNameInContext,
+                    resourceWrapper.getName());
+                throw new ErrorEntryFreeException(errorMessage);
             } else {
+                // Go through the onExit hook of all slots.
                 if (chain != null) {
                     chain.exit(context, resourceWrapper, count, args);
                 }
+                // Go through the existing terminate handlers (associated to this invocation).
+                callExitHandlersAndCleanUp(context);
+
                 // Restore the call stack.
                 context.setCurEntry(parent);
                 if (parent != null) {
-                    ((CtEntry)parent).child = null;
+                    ((CtEntry) parent).child = null;
                 }
                 if (parent == null) {
-                    // Auto-created entry indicates immediate exit.
-                    ContextUtil.exit();
+                    // Default context (auto entered) will be exited automatically.
+                    if (ContextUtil.isDefaultContext(context)) {
+                        ContextUtil.exit();
+                    }
                 }
                 // Clean the reference of context in current entry to avoid duplicate exit.
                 clearEntryContext();
@@ -87,6 +130,14 @@ class CtEntry extends Entry {
 
     protected void clearEntryContext() {
         this.context = null;
+    }
+
+    @Override
+    public void whenTerminate(BiConsumer<Context, Entry> handler) {
+        if (this.exitHandlers == null) {
+            this.exitHandlers = new LinkedList<>();
+        }
+        this.exitHandlers.add(handler);
     }
 
     @Override
