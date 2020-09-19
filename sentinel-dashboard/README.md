@@ -59,3 +59,11 @@ java -Dserver.port=8080 \
 控制台收到客户端心跳包之后，会在左侧导航栏中显示该客户端信息。如果控制台能够看到客户端的机器信息，则表明客户端接入成功了。
 
 更多：[控制台功能介绍](./Sentinel_Dashboard_Feature.md)。
+
+## 4. dashboard 接入 Apollo
+
+[Apollo 开发平台](https://github.com/ctripcorp/apollo/wiki/Apollo%E5%BC%80%E6%94%BE%E5%B9%B3%E5%8F%B0)
+
+将所有在 Sentinel Dashboard 上操作的各种规则持久化到Apollo中，然后由Apollo推送到对应接入的应用中；
+
+所有应用参考：com.alibaba.csp.sentinel.dashboard.rule.apollo

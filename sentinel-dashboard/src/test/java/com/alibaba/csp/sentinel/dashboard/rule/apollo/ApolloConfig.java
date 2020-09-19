@@ -30,7 +30,7 @@ import com.ctrip.framework.apollo.openapi.client.ApolloOpenApiClient;
  * @author hantianwei@gmail.com
  * @since 1.5.0
  */
-@Configuration
+//@Configuration
 public class ApolloConfig {
 
     @Bean
