@@ -29,7 +29,7 @@ public final class ApolloConfigUtil {
         return String.format("%s%s", appName, FLOW_DATA_ID_POSTFIX);
     }
 
-    public static String getDegardeDataId(String appName) {
+    public static String getDegradeDataId(String appName) {
         return String.format("%s%s", appName, DEGRADE_DATA_ID_POSTFIX);
     }
 
